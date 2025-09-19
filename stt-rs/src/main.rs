@@ -175,12 +175,12 @@ impl Model {
         // Add the silence prefix to the audio.
         if self.config.stt_config.audio_silence_prefix_seconds > 0.0 {
             let silence_len =
-                (self.config.stt_config.audio_silence_prefix_seconds * 16000.0) as usize;
+                (self.config.stt_config.audio_silence_prefix_seconds * 8000.0) as usize;
             pcm.splice(0..0, vec![0.0; silence_len]);
         }
         // Add some silence at the end to ensure all the audio is processed.
-        let suffix = (self.config.stt_config.audio_delay_seconds * 16000.0) as usize;
-        pcm.resize(pcm.len() + suffix + 16000, 0.0);
+        let suffix = (self.config.stt_config.audio_delay_seconds * 8000.0) as usize;
+        pcm.resize(pcm.len() + suffix + 8000, 0.0);
 
         let mut last_word = None;
         let mut printed_eot = false;

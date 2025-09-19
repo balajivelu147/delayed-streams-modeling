@@ -20,6 +20,8 @@ import sphn
 from huggingface_hub import hf_hub_download
 from moshi_mlx import models, utils
 
+SAMPLE_RATE = 8000
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("in_file", help="The file to transcribe.")
@@ -30,7 +32,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    audio, _ = sphn.read(args.in_file, sample_rate=16000)
+    audio, _ = sphn.read(args.in_file, sample_rate=SAMPLE_RATE)
     if args.hf_repo is None:
         if args.vad:
             args.hf_repo = "kyutai/stt-1b-en_fr-candle"
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     )
 
     print(f"starting inference {audio.shape}")
-    audio = mx.concat([mx.array(audio), mx.zeros((1, 32000))], axis=-1)
+    audio = mx.concat([mx.array(audio), mx.zeros((1, 2 * SAMPLE_RATE))], axis=-1)
     last_print_was_vad = False
     for start_idx in range(0, audio.shape[-1] // 1280 * 1280, 1280):
         block = audio[:, None, start_idx : start_idx + 1280]

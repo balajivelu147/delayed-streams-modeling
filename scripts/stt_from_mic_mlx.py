@@ -22,6 +22,8 @@ import sounddevice as sd
 from huggingface_hub import hf_hub_download
 from moshi_mlx import models, utils
 
+SAMPLE_RATE = 8000
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-steps", default=4096)
@@ -86,7 +88,7 @@ if __name__ == "__main__":
     with sd.InputStream(
         channels=1,
         dtype="float32",
-        samplerate=16000,
+        samplerate=SAMPLE_RATE,
         blocksize=1280,
         callback=audio_callback,
     ):
