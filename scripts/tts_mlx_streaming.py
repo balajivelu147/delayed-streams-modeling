@@ -292,7 +292,7 @@ def main():
 
         with sd.OutputStream(
             samplerate=mimi.sample_rate,
-            blocksize=1920,
+            blocksize=1280,
             channels=1,
             callback=audio_callback,
         ):

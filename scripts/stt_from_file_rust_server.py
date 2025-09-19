@@ -16,12 +16,12 @@ import numpy as np
 import sphn
 import websockets
 
-SAMPLE_RATE = 24000
-FRAME_SIZE = 1920  # Send data in chunks
+SAMPLE_RATE = 16000
+FRAME_SIZE = 1280  # Send data in chunks
 
 
 def load_and_process_audio(file_path):
-    """Load an MP3 file, resample to 24kHz, convert to mono, and extract PCM float32 data."""
+    """Load an MP3 file, resample to 16kHz, convert to mono, and extract PCM float32 data."""
     pcm_data, _ = sphn.read(file_path, sample_rate=SAMPLE_RATE)
     return pcm_data[0]
 

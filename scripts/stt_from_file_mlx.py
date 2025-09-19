@@ -30,7 +30,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    audio, _ = sphn.read(args.in_file, sample_rate=24000)
+    audio, _ = sphn.read(args.in_file, sample_rate=16000)
     if args.hf_repo is None:
         if args.vad:
             args.hf_repo = "kyutai/stt-1b-en_fr-candle"
@@ -75,10 +75,10 @@ if __name__ == "__main__":
     )
 
     print(f"starting inference {audio.shape}")
-    audio = mx.concat([mx.array(audio), mx.zeros((1, 48000))], axis=-1)
+    audio = mx.concat([mx.array(audio), mx.zeros((1, 32000))], axis=-1)
     last_print_was_vad = False
-    for start_idx in range(0, audio.shape[-1] // 1920 * 1920, 1920):
-        block = audio[:, None, start_idx : start_idx + 1920]
+    for start_idx in range(0, audio.shape[-1] // 1280 * 1280, 1280):
+        block = audio[:, None, start_idx : start_idx + 1280]
         other_audio_tokens = audio_tokenizer.encode_step(block).transpose(0, 2, 1)
         if args.vad:
             text_token, vad_heads = gen.step_with_extra_heads(other_audio_tokens[0])
