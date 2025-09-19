@@ -100,7 +100,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--url",
         help="The URL of the server to which to send the audio",
-        default="ws://127.0.0.1:8080",
+        default="ws://127.0.0.1:8082",
     )
     parser.add_argument("--api-key", default="public_token")
     parser.add_argument(
