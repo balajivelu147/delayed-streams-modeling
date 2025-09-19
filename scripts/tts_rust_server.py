@@ -21,7 +21,7 @@ import sphn
 import tqdm
 import websockets
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 8000
 
 TTS_TEXT = "Hello, this is a test of the moshi text to speech system, this should result in some nicely sounding generated voice."
 DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
