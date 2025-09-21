@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     "julius",
 #     "msgpack",
 #     "numpy",
 #     "sphn",
@@ -13,7 +14,7 @@ import time
 
 import msgpack
 import numpy as np
-import sphn
+from scripts import load_resampled_audio
 import websockets
 
 SAMPLE_RATE = 8000
@@ -21,8 +22,8 @@ FRAME_SIZE = 1280  # Send data in chunks
 
 
 def load_and_process_audio(file_path):
-    """Load an MP3 file, resample to 8kHz, convert to mono, and extract PCM float32 data."""
-    pcm_data, _ = sphn.read(file_path, sample_rate=SAMPLE_RATE)
+    """Load an audio file and return clipped mono PCM data at 8kHz."""
+    pcm_data = load_resampled_audio(file_path, target_sample_rate=SAMPLE_RATE, mono=True)
     return pcm_data[0]
 
 
