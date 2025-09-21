@@ -1,5 +1,4 @@
 """Shared audio utilities for scripts."""
-
 from __future__ import annotations
 
 import julius
@@ -35,23 +34,40 @@ def load_resampled_audio(
     """
 
     audio, input_sample_rate = sphn.read(file_path)
-    audio = np.asarray(audio)
+    audio = np.asarray(audio, dtype=np.float32)
 
     if audio.ndim == 1:
         audio = audio[None, :]
 
     if mono and audio.shape[0] > 1:
-        audio = np.mean(audio, axis=0, keepdims=True)
+        audio = np.mean(audio, axis=0, keepdims=True, dtype=np.float32)
 
-    audio_tensor = torch.from_numpy(audio.astype(np.float32, copy=False))
+    audio = np.ascontiguousarray(audio)
+    input_sample_rate = int(input_sample_rate)
+    target_sample_rate = int(target_sample_rate)
 
-    if int(input_sample_rate) != int(target_sample_rate):
-        audio_tensor = julius.resample_frac(
-            audio_tensor, int(input_sample_rate), int(target_sample_rate)
-        )
+    audio_tensor = torch.from_numpy(audio)
+    expected_length: int | None = None
 
-    audio = audio_tensor.numpy()
+    if input_sample_rate != target_sample_rate:
+        original_length = audio_tensor.shape[-1]
+        expected_length = int(round(original_length * target_sample_rate / input_sample_rate))
+
+        resampler = julius.ResampleFrac(input_sample_rate, target_sample_rate)
+        resampler = resampler.to(audio_tensor)
+        audio_tensor = resampler(audio_tensor, output_length=expected_length)
+
+    audio = audio_tensor.detach().cpu().numpy()
     audio = np.clip(audio, -1.0, 1.0)
+
+    if expected_length is not None:
+        current_length = audio.shape[-1]
+        if current_length < expected_length:
+            pad_width = [(0, 0)] * audio.ndim
+            pad_width[-1] = (0, expected_length - current_length)
+            audio = np.pad(audio, pad_width, mode="constant")
+        elif current_length > expected_length:
+            audio = audio[..., :expected_length]
 
     if dtype is not None and audio.dtype != dtype:
         audio = audio.astype(dtype, copy=False)
