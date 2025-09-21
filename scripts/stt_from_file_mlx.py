@@ -16,9 +16,10 @@ import json
 import mlx.core as mx
 import mlx.nn as nn
 import sentencepiece
-import sphn
 from huggingface_hub import hf_hub_download
 from moshi_mlx import models, utils
+
+from scripts.convert_to_16k import load_resampled_audio
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -30,7 +31,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    audio, _ = sphn.read(args.in_file, sample_rate=16000)
+    audio = load_resampled_audio(args.in_file, keep_channels=True)
     if args.hf_repo is None:
         if args.vad:
             args.hf_repo = "kyutai/stt-1b-en_fr-candle"

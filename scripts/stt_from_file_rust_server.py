@@ -13,17 +13,18 @@ import time
 
 import msgpack
 import numpy as np
-import sphn
 import websockets
+
+from scripts.convert_to_16k import load_resampled_audio
 
 SAMPLE_RATE = 16000
 FRAME_SIZE = 1280  # Send data in chunks
 
 
 def load_and_process_audio(file_path):
-    """Load an MP3 file, resample to 16kHz, convert to mono, and extract PCM float32 data."""
-    pcm_data, _ = sphn.read(file_path, sample_rate=SAMPLE_RATE)
-    return pcm_data[0]
+    """Load audio, resample to 16 kHz and return mono float32 PCM."""
+    pcm_data = load_resampled_audio(file_path)
+    return pcm_data
 
 
 async def receive_messages(websocket):
