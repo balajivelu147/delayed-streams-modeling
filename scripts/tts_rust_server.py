@@ -22,56 +22,89 @@ import websockets
 
 # The server currently streams audio at 24kHz. Downsample on the client so that the
 # saved or played audio uses the expected 8kHz cadence.
-SERVER_SAMPLE_RATE = 24000
+DEFAULT_SERVER_SAMPLE_RATE = 24000
 TARGET_SAMPLE_RATE = 8000
-TARGET_FRAME_SIZE = TARGET_SAMPLE_RATE // 1000 * 80
-_DOWNSAMPLE_FACTOR = SERVER_SAMPLE_RATE // TARGET_SAMPLE_RATE
-_DOWNSAMPLE_KERNEL = np.full((_DOWNSAMPLE_FACTOR,), 1.0 / _DOWNSAMPLE_FACTOR, dtype=np.float32)
+TARGET_FRAME_SIZE = int(round(TARGET_SAMPLE_RATE * 0.08))
 
 
-def _downsample_to_target_rate(
-    pcm: np.ndarray,
-    residual: np.ndarray,
-    *,
-    flush: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Downsample a PCM chunk to the target rate, keeping leftover samples.
+class StreamingDownsampler:
+    """Incrementally convert server PCM into the target sample rate."""
 
-    The server emits 24kHz audio. We apply a simple moving-average low-pass filter
-    followed by decimation by three so that the resulting stream matches 8kHz.
-    Any samples that do not fit an even multiple of the downsampling factor are
-    returned as residual and will be prefixed to the next chunk.
-    """
+    def __init__(self, target_rate: int, *, assume_source: int | None = None) -> None:
+        if target_rate <= 0:
+            raise ValueError("Target rate must be positive")
+        self._target_rate = target_rate
+        self._source_rate = None
+        self._factor = 1
+        self._residual = np.array([], dtype=np.float32)
+        if assume_source is not None:
+            self.configure_source_rate(assume_source)
 
-    if TARGET_SAMPLE_RATE == SERVER_SAMPLE_RATE:
-        return pcm.astype(np.float32), np.array([], dtype=np.float32)
+    @property
+    def source_rate(self) -> int | None:
+        return self._source_rate
 
-    if _DOWNSAMPLE_FACTOR * TARGET_SAMPLE_RATE != SERVER_SAMPLE_RATE:
-        msg = (
-            "Expected integer downsample factor between server and target sample rates. "
-            f"Got server={SERVER_SAMPLE_RATE}, target={TARGET_SAMPLE_RATE}."
-        )
-        raise ValueError(msg)
+    def configure_source_rate(self, sample_rate: int) -> None:
+        """(Re)configure the upstream sample rate and reset residuals."""
 
-    if residual.size:
-        pcm = np.concatenate([residual, pcm])
+        if sample_rate <= 0:
+            raise ValueError("Sample rate must be positive")
+        if self._source_rate == sample_rate:
+            return
+        self._source_rate = sample_rate
+        if sample_rate == self._target_rate:
+            self._factor = 1
+        else:
+            if sample_rate % self._target_rate != 0:
+                msg = (
+                    "Expected integer downsample factor between server and target sample rates. "
+                    f"Got server={sample_rate}, target={self._target_rate}."
+                )
+                raise ValueError(msg)
+            self._factor = sample_rate // self._target_rate
+        self._residual = np.array([], dtype=np.float32)
 
-    if flush and pcm.size:
-        pad = (-pcm.size) % _DOWNSAMPLE_FACTOR
-        if pad:
-            pcm = np.pad(pcm, (0, pad))
-    elif pcm.size < _DOWNSAMPLE_FACTOR:
-        return np.array([], dtype=np.float32), pcm
+    def process(self, pcm: np.ndarray, *, flush: bool = False) -> np.ndarray:
+        """Downsample the provided chunk and retain any leftovers for later."""
 
-    trim = pcm.size - (pcm.size % _DOWNSAMPLE_FACTOR)
-    main_chunk = pcm[:trim]
-    residual = pcm[trim:]
+        if self._source_rate is None:
+            raise RuntimeError("Source rate has not been configured yet")
 
-    # Moving-average low-pass filter before decimation to reduce aliasing.
-    filtered = np.convolve(main_chunk, _DOWNSAMPLE_KERNEL, mode="same")
-    downsampled = filtered.reshape(-1, _DOWNSAMPLE_FACTOR).mean(axis=1)
-    return downsampled.astype(np.float32), residual.astype(np.float32)
+        pcm = np.asarray(pcm, dtype=np.float32)
+        if pcm.size == 0 and self._residual.size == 0:
+            return np.array([], dtype=np.float32)
 
+        # Normalise the server PCM if it arrives as 16-bit integers.
+        if pcm.size and np.max(np.abs(pcm)) > 1.0:
+            pcm = pcm / np.float32(np.iinfo(np.int16).max)
+
+        if self._residual.size:
+            pcm = np.concatenate([self._residual, pcm])
+
+        if self._factor == 1:
+            self._residual = np.array([], dtype=np.float32)
+            return pcm
+
+        if flush and pcm.size:
+            pad = (-pcm.size) % self._factor
+            if pad:
+                pcm = np.pad(pcm, (0, pad))
+
+        trim = pcm.size - (pcm.size % self._factor)
+        if trim == 0:
+            if flush and pcm.size:
+                trim = pcm.size
+            else:
+                self._residual = pcm
+                return np.array([], dtype=np.float32)
+
+        main_chunk = pcm[:trim]
+        self._residual = pcm[trim:] if not flush else np.array([], dtype=np.float32)
+
+        # Simple moving-average decimation to reduce aliasing.
+        reshaped = main_chunk.reshape(-1, self._factor)
+        downsampled = reshaped.mean(axis=1)
+        return downsampled.astype(np.float32)
 TTS_TEXT = "Hello, this is a test of the moshi text to speech system, this should result in some nicely sounding generated voice."
 DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
 AUTH_TOKEN = "public_token"
@@ -82,9 +115,11 @@ async def receive_messages(
     output_queue: asyncio.Queue,
 ):
     with tqdm.tqdm(desc="Receiving audio", unit=" seconds generated") as pbar:
+        downsampler = StreamingDownsampler(
+            TARGET_SAMPLE_RATE, assume_source=DEFAULT_SERVER_SAMPLE_RATE
+        )
         accumulated_samples = 0
         last_seconds = 0
-        residual = np.array([], dtype=np.float32)
         pending_output = np.array([], dtype=np.float32)
 
         try:
@@ -94,8 +129,10 @@ async def receive_messages(
                 if msg["type"] != "Audio":
                     continue
 
-                pcm = np.asarray(msg["pcm"], dtype=np.float32)
-                pcm, residual = _downsample_to_target_rate(pcm, residual)
+                sample_rate = int(msg.get("sample_rate", downsampler.source_rate or DEFAULT_SERVER_SAMPLE_RATE))
+                downsampler.configure_source_rate(sample_rate)
+
+                pcm = downsampler.process(msg["pcm"])
                 if pcm.size:
                     if pending_output.size:
                         pending_output = np.concatenate([pending_output, pcm])
@@ -106,20 +143,18 @@ async def receive_messages(
                         pending_output = pending_output[TARGET_FRAME_SIZE:]
 
                 accumulated_samples += len(msg["pcm"])
-                current_seconds = accumulated_samples // SERVER_SAMPLE_RATE
+                source_rate = downsampler.source_rate or sample_rate
+                current_seconds = accumulated_samples // source_rate
                 if current_seconds > last_seconds:
                     pbar.update(current_seconds - last_seconds)
                     last_seconds = current_seconds
         finally:
-            if residual.size:
-                pcm, _ = _downsample_to_target_rate(
-                    np.array([], dtype=np.float32), residual, flush=True
-                )
-                if pcm.size:
-                    if pending_output.size:
-                        pending_output = np.concatenate([pending_output, pcm])
-                    else:
-                        pending_output = pcm
+            flushed = downsampler.process(np.array([], dtype=np.float32), flush=True)
+            if flushed.size:
+                if pending_output.size:
+                    pending_output = np.concatenate([pending_output, flushed])
+                else:
+                    pending_output = flushed
 
             if pending_output.size:
                 await output_queue.put(pending_output)
