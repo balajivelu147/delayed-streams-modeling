@@ -132,14 +132,26 @@ async def receive_messages(
                 sample_rate = int(msg.get("sample_rate", downsampler.source_rate or DEFAULT_SERVER_SAMPLE_RATE))
                 downsampler.configure_source_rate(sample_rate)
 
-                pcm = downsampler.process(msg["pcm"])
+                raw_pcm = msg["pcm"]
+                if isinstance(raw_pcm, (bytes, bytearray, memoryview)):
+                    # The streaming API serialises PCM as little-endian
+                    # float32 values. Accept a raw buffer here so the client
+                    # works regardless of how msgpack deserialised the field.
+                    buffer = memoryview(raw_pcm)
+                    pcm = np.frombuffer(buffer, dtype="<f4", count=buffer.nbytes // 4)
+                else:
+                    pcm = np.asarray(raw_pcm, dtype=np.float32)
+
+                pcm = downsampler.process(pcm)
                 if pcm.size:
                     if pending_output.size:
                         pending_output = np.concatenate([pending_output, pcm])
                     else:
                         pending_output = pcm
                     while pending_output.size >= TARGET_FRAME_SIZE:
-                        await output_queue.put(pending_output[:TARGET_FRAME_SIZE])
+                        await output_queue.put(
+                            np.ascontiguousarray(pending_output[:TARGET_FRAME_SIZE])
+                        )
                         pending_output = pending_output[TARGET_FRAME_SIZE:]
 
                 accumulated_samples += len(msg["pcm"])
@@ -157,7 +169,7 @@ async def receive_messages(
                     pending_output = flushed
 
             if pending_output.size:
-                await output_queue.put(pending_output)
+                await output_queue.put(np.ascontiguousarray(pending_output))
 
             print("End of audio.")
             await output_queue.put(None)  # Signal end of audio
@@ -203,6 +215,7 @@ async def output_audio(out: str, output_queue: asyncio.Queue):
             channels=1,
             callback=audio_callback,
         ):
+            print(f"Output stream initialised at {TARGET_SAMPLE_RATE} Hz")
             while not should_exit:
                 await asyncio.sleep(0.05)
     else:
