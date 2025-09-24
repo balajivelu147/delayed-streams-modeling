@@ -87,14 +87,20 @@ async def receive_messages(
         residual = np.array([], dtype=np.float32)
         pending_output = np.array([], dtype=np.float32)
 
-        async for message_bytes in websocket:
-            msg = msgpack.unpackb(message_bytes)
+        try:
+            async for message_bytes in websocket:
+                msg = msgpack.unpackb(message_bytes)
 
-            if msg["type"] == "Audio":
-                pcm = np.array(msg["pcm"], dtype=np.float32)
+                if msg["type"] != "Audio":
+                    continue
+
+                pcm = np.asarray(msg["pcm"], dtype=np.float32)
                 pcm, residual = _downsample_to_target_rate(pcm, residual)
                 if pcm.size:
-                    pending_output = np.concatenate([pending_output, pcm])
+                    if pending_output.size:
+                        pending_output = np.concatenate([pending_output, pcm])
+                    else:
+                        pending_output = pcm
                     while pending_output.size >= TARGET_FRAME_SIZE:
                         await output_queue.put(pending_output[:TARGET_FRAME_SIZE])
                         pending_output = pending_output[TARGET_FRAME_SIZE:]
@@ -104,45 +110,57 @@ async def receive_messages(
                 if current_seconds > last_seconds:
                     pbar.update(current_seconds - last_seconds)
                     last_seconds = current_seconds
+        finally:
+            if residual.size:
+                pcm, _ = _downsample_to_target_rate(
+                    np.array([], dtype=np.float32), residual, flush=True
+                )
+                if pcm.size:
+                    if pending_output.size:
+                        pending_output = np.concatenate([pending_output, pcm])
+                    else:
+                        pending_output = pcm
 
-        if residual.size:
-            pcm, residual = _downsample_to_target_rate(
-                np.array([], dtype=np.float32),
-                residual,
-                flush=True,
-            )
-            if pcm.size:
-                pending_output = np.concatenate([pending_output, pcm])
+            if pending_output.size:
+                await output_queue.put(pending_output)
 
-        if pending_output.size:
-            await output_queue.put(pending_output)
-    print("End of audio.")
-    await output_queue.put(None)  # Signal end of audio
+            print("End of audio.")
+            await output_queue.put(None)  # Signal end of audio
 
 
 async def output_audio(out: str, output_queue: asyncio.Queue):
     if out == "-":
         should_exit = False
+        stop_requested = False
+        pending_local = np.array([], dtype=np.float32)
 
-        def audio_callback(outdata, _a, _b, _c):
-            nonlocal should_exit
+        def audio_callback(outdata, _frames, _time, _status):
+            nonlocal should_exit, stop_requested, pending_local
 
-            try:
-                pcm_data = output_queue.get_nowait()
-                if pcm_data is not None:
-                    frames = min(pcm_data.size, outdata.shape[0])
-                    outdata[:frames, 0] = pcm_data[:frames]
-                    if frames < outdata.shape[0]:
-                        outdata[frames:, 0] = 0
-                    if pcm_data.size > outdata.shape[0]:
-                        remainder = pcm_data[outdata.shape[0] :]
-                        if remainder.size:
-                            output_queue.put_nowait(remainder)
+            if pending_local.size < outdata.shape[0] and not stop_requested:
+                try:
+                    next_chunk = output_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    next_chunk = None
                 else:
-                    should_exit = True
-                    outdata[:] = 0
-            except asyncio.QueueEmpty:
-                outdata[:] = 0
+                    if next_chunk is None:
+                        stop_requested = True
+                    elif next_chunk.size:
+                        if pending_local.size:
+                            pending_local = np.concatenate([pending_local, next_chunk])
+                        else:
+                            pending_local = next_chunk
+
+            frames = min(pending_local.size, outdata.shape[0])
+            if frames:
+                outdata[:frames, 0] = pending_local[:frames]
+            if frames < outdata.shape[0]:
+                outdata[frames:, 0] = 0
+            if frames:
+                pending_local = pending_local[frames:]
+
+            if stop_requested and pending_local.size == 0:
+                should_exit = True
 
         with sd.OutputStream(
             samplerate=TARGET_SAMPLE_RATE,
@@ -150,10 +168,8 @@ async def output_audio(out: str, output_queue: asyncio.Queue):
             channels=1,
             callback=audio_callback,
         ):
-            while True:
-                if should_exit:
-                    break
-                await asyncio.sleep(1)
+            while not should_exit:
+                await asyncio.sleep(0.05)
     else:
         frames = []
         while True:
@@ -182,7 +198,9 @@ async def output_audio(out: str, output_queue: asyncio.Queue):
                 wav_file.writeframes(int16_pcm.tobytes())
             else:
                 wav_file.writeframes(b"")
-        print(f"Saved audio to {out}")
+        with wave.open(out, "rb") as wav_file:
+            reported_rate = wav_file.getframerate()
+        print(f"Saved audio to {out} (sample rate: {reported_rate} Hz)")
 
 
 async def read_lines_from_stdin():
@@ -258,10 +276,18 @@ async def websocket_client():
 
         async def send_loop():
             print("go send")
-            async for line in get_lines(args.inp):
-                for word in line.split():
-                    await websocket.send(msgpack.packb({"type": "Text", "text": word}))
-            await websocket.send(msgpack.packb({"type": "Eos"}))
+            try:
+                async for line in get_lines(args.inp):
+                    for word in line.split():
+                        await websocket.send(
+                            msgpack.packb({"type": "Text", "text": word})
+                        )
+                await websocket.send(msgpack.packb({"type": "Eos"}))
+            except websockets.ConnectionClosed:
+                # The server closed the connection before we finished streaming.
+                # This typically happens after it finishes synthesis. Swallow the
+                # error so the receive loop can drain the remaining audio.
+                pass
 
         output_queue = asyncio.Queue()
         receive_task = asyncio.create_task(receive_messages(websocket, output_queue))
