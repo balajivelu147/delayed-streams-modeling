@@ -6,6 +6,9 @@ use anyhow::Result;
 use candle::{Device, Tensor};
 use clap::Parser;
 
+const SAMPLE_RATE: usize = 8_000;
+const CHUNK_SIZE: usize = SAMPLE_RATE / 1000 * 80; // 80ms chunks
+
 #[derive(Debug, Parser)]
 struct Args {
     /// The audio input file, in wav/mp3/ogg/... format.
@@ -175,16 +178,16 @@ impl Model {
         // Add the silence prefix to the audio.
         if self.config.stt_config.audio_silence_prefix_seconds > 0.0 {
             let silence_len =
-                (self.config.stt_config.audio_silence_prefix_seconds * 24000.0) as usize;
+                (self.config.stt_config.audio_silence_prefix_seconds * SAMPLE_RATE as f64) as usize;
             pcm.splice(0..0, vec![0.0; silence_len]);
         }
         // Add some silence at the end to ensure all the audio is processed.
-        let suffix = (self.config.stt_config.audio_delay_seconds * 24000.0) as usize;
-        pcm.resize(pcm.len() + suffix + 24000, 0.0);
+        let suffix = (self.config.stt_config.audio_delay_seconds * SAMPLE_RATE as f64) as usize;
+        pcm.resize(pcm.len() + suffix + SAMPLE_RATE, 0.0);
 
         let mut last_word = None;
         let mut printed_eot = false;
-        for pcm in pcm.chunks(1920) {
+        for pcm in pcm.chunks(CHUNK_SIZE) {
             let pcm = Tensor::new(pcm, &self.dev)?.reshape((1, 1, ()))?;
             let asr_msgs = self.state.step_pcm(pcm, None, &().into(), |_, _, _| ())?;
             for asr_msg in asr_msgs.iter() {
@@ -247,8 +250,9 @@ fn main() -> Result<()> {
 
     println!("Loading audio file from: {}", args.in_file);
     let (pcm, sample_rate) = kaudio::pcm_decode(&args.in_file)?;
-    let pcm = if sample_rate != 24_000 {
-        kaudio::resample(&pcm, sample_rate as usize, 24_000)?
+    let sample_rate = sample_rate as usize;
+    let pcm = if sample_rate != SAMPLE_RATE {
+        kaudio::resample(&pcm, sample_rate, SAMPLE_RATE)?
     } else {
         pcm
     };

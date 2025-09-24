@@ -16,7 +16,8 @@ import numpy as np
 import sounddevice as sd
 import websockets
 
-SAMPLE_RATE = 24000
+SAMPLE_RATE = 8000
+FRAME_SIZE = SAMPLE_RATE // 1000 * 80  # 80ms blocks
 
 # The VAD has several prediction heads, each of which tries to determine whether there
 # has been a pause of a given length. The lengths are 0.5, 1.0, 2.0, and 3.0 seconds.
@@ -83,7 +84,7 @@ async def stream_audio(url: str, api_key: str, show_vad: bool):
         channels=1,
         dtype="float32",
         callback=audio_callback,
-        blocksize=1920,  # 80ms blocks
+        blocksize=FRAME_SIZE,
     ):
         headers = {"kyutai-api-key": api_key}
         # Instead of using the header, you can authenticate by adding `?auth_id={api_key}` to the URL
