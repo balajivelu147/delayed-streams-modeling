@@ -3,7 +3,6 @@
 # dependencies = [
 #     "msgpack",
 #     "numpy",
-#     "sphn",
 #     "websockets",
 #     "sounddevice",
 #     "tqdm",
@@ -17,7 +16,7 @@ from urllib.parse import urlencode
 import msgpack
 import numpy as np
 import sounddevice as sd
-import sphn
+import wave
 import tqdm
 import websockets
 
@@ -167,7 +166,22 @@ async def output_audio(out: str, output_queue: asyncio.Queue):
             pcm = np.concatenate(frames, axis=0)
         else:
             pcm = np.array([], dtype=np.float32)
-        sphn.write_wav(out, pcm, TARGET_SAMPLE_RATE)
+
+        # Persist the file with an explicit 8 kHz WAV header so that downstream
+        # tools correctly read the sample rate regardless of third party
+        # library quirks.
+        with wave.open(out, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(TARGET_SAMPLE_RATE)
+            if pcm.size:
+                clipped = np.clip(pcm, -1.0, 1.0)
+                int16_pcm = np.round(
+                    clipped * float(np.iinfo(np.int16).max)
+                ).astype("<i2")
+                wav_file.writeframes(int16_pcm.tobytes())
+            else:
+                wav_file.writeframes(b"")
         print(f"Saved audio to {out}")
 
 
