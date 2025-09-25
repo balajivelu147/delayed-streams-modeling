@@ -25,7 +25,7 @@ import websockets
 # saved or played audio uses the expected 8kHz cadence.
 SERVER_SAMPLE_RATE = 24000
 TARGET_SAMPLE_RATE = 8000
-TARGET_FRAME_SIZE = TARGET_SAMPLE_RATE // 1000 * 80
+TARGET_FRAME_SIZE = TARGET_SAMPLE_RATE // 1000 * 60
 _DOWNSAMPLE_FACTOR = SERVER_SAMPLE_RATE // TARGET_SAMPLE_RATE
 _DOWNSAMPLE_KERNEL = np.full((_DOWNSAMPLE_FACTOR,), 1.0 / _DOWNSAMPLE_FACTOR, dtype=np.float32)
 
@@ -167,8 +167,17 @@ async def output_audio(out: str, output_queue: asyncio.Queue):
             pcm = np.concatenate(frames, axis=0)
         else:
             pcm = np.array([], dtype=np.float32)
-        sphn.write_wav(out, pcm, TARGET_SAMPLE_RATE)
-        print(f"Saved audio to {out}")
+        if out.lower().endswith(".raw"):
+            pcm_i16 = np.clip(pcm, -1.0, 1.0)
+            pcm_i16 = (pcm_i16 * np.float32(32767.0)).astype("<i2")
+            with open(out, "wb") as f:
+                pcm_i16.tofile(f)
+            print(
+                f"Saved raw 16-bit PCM audio to {out} at {TARGET_SAMPLE_RATE}Hz"
+            )
+        else:
+            sphn.write_wav(out, pcm, TARGET_SAMPLE_RATE)
+            print(f"Saved WAV audio to {out}")
 
 
 async def read_lines_from_stdin():
@@ -214,7 +223,9 @@ async def websocket_client():
     parser = argparse.ArgumentParser(description="Use the TTS streaming API")
     parser.add_argument("inp", type=str, help="Input file, use - for stdin.")
     parser.add_argument(
-        "out", type=str, help="Output file to generate, use - for playing the audio"
+        "out",
+        type=str,
+        help="Output file to generate (.wav or .raw for 16-bit PCM), use - for playing the audio",
     )
     parser.add_argument(
         "--voice",

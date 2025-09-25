@@ -7,7 +7,7 @@ use candle::{Device, Tensor};
 use clap::Parser;
 
 const SAMPLE_RATE: usize = 8_000;
-const CHUNK_SIZE: usize = SAMPLE_RATE / 1000 * 80; // 80ms chunks
+const CHUNK_SIZE: usize = SAMPLE_RATE / 1000 * 60; // 60ms chunks
 
 #[derive(Debug, Parser)]
 struct Args {
