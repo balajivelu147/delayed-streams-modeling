@@ -36,7 +36,6 @@ async def receive_messages(websocket):
             # much audio the server has already processed. We don't use either here.
             continue
         if data["type"] == "Word":
-            print(data["text"], end=" ", flush=True)
             transcript.append(
                 {
                     "text": data["text"],
@@ -127,7 +126,10 @@ if __name__ == "__main__":
     url = f"{args.url}/api/asr-streaming"
     transcript = asyncio.run(stream_audio(url, args.api_key, args.rtf))
 
-    print()
+    if transcript:
+        final_text = " ".join(word["text"] for word in transcript)
+        print(final_text)
+
     print()
     for word in transcript:
         print(
