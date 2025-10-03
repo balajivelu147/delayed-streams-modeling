@@ -276,6 +276,36 @@ echo "Hey, how are you?" | python scripts/tts_rust_server.py - -
 # From text file to audio file
 python scripts/tts_rust_server.py text_to_say.txt audio_output.wav
 ```
+
+If you want to integrate the streamed audio generation into another Python
+application (for instance to feed a dialer), you can import the helper
+functions exposed by the script:
+
+```python
+import asyncio
+
+from scripts.tts_rust_server import (
+    synthesize_text_into_dialer,
+    synthesize_text_to_file,
+)
+
+# Blocking helper that writes the output to a WAV file at 8kHz.
+synthesize_text_to_file("Hello from Moshi!", "audio_output.wav")
+
+
+class MyDialer:
+    def load_audio(self, pcm, sample_rate):
+        """Implement how your dialer queues PCM data."""
+        ...
+
+
+async def main():
+    dialer = MyDialer()
+    await synthesize_text_into_dialer("Welcome to our IVR", dialer)
+
+
+asyncio.run(main())
+```
 </details>
 
 <details>
