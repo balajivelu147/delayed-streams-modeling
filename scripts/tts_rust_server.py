@@ -9,9 +9,14 @@
 #     "tqdm",
 # ]
 # ///
+from __future__ import annotations
+
 import argparse
 import asyncio
 import sys
+import threading
+from contextlib import nullcontext
+from typing import Any, Awaitable, Protocol
 from urllib.parse import urlencode
 
 import msgpack
@@ -77,12 +82,28 @@ TTS_TEXT = "Hello, this is a test of the moshi text to speech system, this shoul
 DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
 AUTH_TOKEN = "public_token"
 
+__all__ = [
+    "DialerAudioSink",
+    "synthesize_text_into_dialer",
+    "synthesize_text_to_array",
+    "synthesize_text_to_file",
+]
+
 
 async def receive_messages(
     websocket: websockets.ClientConnection,
     output_queue: asyncio.Queue,
+    *,
+    show_progress: bool = True,
 ):
-    with tqdm.tqdm(desc="Receiving audio", unit=" seconds generated") as pbar:
+    progress_ctx: Any
+    if show_progress:
+        progress_ctx = tqdm.tqdm(desc="Receiving audio", unit=" seconds generated")
+    else:
+        progress_ctx = nullcontext()
+
+    with progress_ctx as maybe_pbar:
+        pbar = maybe_pbar if show_progress else None
         accumulated_samples = 0
         last_seconds = 0
         residual = np.array([], dtype=np.float32)
@@ -102,7 +123,7 @@ async def receive_messages(
 
                 accumulated_samples += len(msg["pcm"])
                 current_seconds = accumulated_samples // SERVER_SAMPLE_RATE
-                if current_seconds > last_seconds:
+                if pbar is not None and current_seconds > last_seconds:
                     pbar.update(current_seconds - last_seconds)
                     last_seconds = current_seconds
 
@@ -117,8 +138,136 @@ async def receive_messages(
 
         if pending_output.size:
             await output_queue.put(pending_output)
-    print("End of audio.")
+    if show_progress:
+        print("End of audio.")
     await output_queue.put(None)  # Signal end of audio
+
+
+async def _drain_output_queue(output_queue: asyncio.Queue) -> np.ndarray:
+    frames: list[np.ndarray] = []
+    while True:
+        item = await output_queue.get()
+        if item is None:
+            break
+        frames.append(item)
+
+    if frames:
+        return np.concatenate(frames, axis=0)
+    return np.array([], dtype=np.float32)
+
+
+class DialerAudioSink(Protocol):
+    """Minimal dialer API expected by the helpers.
+
+    Implementations should accept mono float32 PCM at ``TARGET_SAMPLE_RATE``.
+    """
+
+    def load_audio(self, pcm: np.ndarray, sample_rate: int) -> None:
+        """Queue PCM audio to be played to a caller."""
+
+
+async def synthesize_text_to_array(
+    text: str,
+    *,
+    voice: str = "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+    url: str = "ws://127.0.0.1:8082",
+    api_key: str = AUTH_TOKEN,
+    show_progress: bool = False,
+) -> np.ndarray:
+    """Return 8kHz float32 PCM samples synthesized from *text*."""
+
+    params = {"voice": voice, "format": "PcmMessagePack"}
+    uri = f"{url}/api/tts_streaming?{urlencode(params)}"
+    headers = {"kyutai-api-key": api_key}
+
+    output_queue: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
+    async with websockets.connect(uri, additional_headers=headers) as websocket:
+        receive_task = asyncio.create_task(
+            receive_messages(
+                websocket,
+                output_queue,
+                show_progress=show_progress,
+            )
+        )
+
+        for word in text.split():
+            await websocket.send(msgpack.packb({"type": "Text", "text": word}))
+        await websocket.send(msgpack.packb({"type": "Eos"}))
+
+        await receive_task
+
+    return await _drain_output_queue(output_queue)
+
+
+async def synthesize_text_into_dialer(
+    text: str,
+    dialer: DialerAudioSink,
+    *,
+    voice: str = "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+    url: str = "ws://127.0.0.1:8082",
+    api_key: str = AUTH_TOKEN,
+    show_progress: bool = False,
+) -> np.ndarray:
+    """Generate 8kHz speech for *text* and push it to a dialer compatible object."""
+
+    pcm = await synthesize_text_to_array(
+        text,
+        voice=voice,
+        url=url,
+        api_key=api_key,
+        show_progress=show_progress,
+    )
+    dialer.load_audio(pcm, TARGET_SAMPLE_RATE)
+    return pcm
+
+
+def _run_async(coro: Awaitable[Any]) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: list[BaseException] = []
+    finished = threading.Event()
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - surfaced to caller
+            error.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(target=runner, daemon=True).start()
+    finished.wait()
+    if error:
+        raise error[0]
+    return result.get("value")
+
+
+def synthesize_text_to_file(
+    text: str,
+    output_path: str,
+    *,
+    voice: str = "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+    url: str = "ws://127.0.0.1:8082",
+    api_key: str = AUTH_TOKEN,
+    show_progress: bool = False,
+) -> str:
+    """Blocking helper that writes synthesized 8kHz audio to *output_path*."""
+
+    pcm: np.ndarray = _run_async(
+        synthesize_text_to_array(
+            text,
+            voice=voice,
+            url=url,
+            api_key=api_key,
+            show_progress=show_progress,
+        )
+    )
+    sphn.write_wav(output_path, pcm, TARGET_SAMPLE_RATE)
+    return output_path
 
 
 async def output_audio(out: str, output_queue: asyncio.Queue):
@@ -250,7 +399,9 @@ async def websocket_client():
             await websocket.send(msgpack.packb({"type": "Eos"}))
 
         output_queue = asyncio.Queue()
-        receive_task = asyncio.create_task(receive_messages(websocket, output_queue))
+        receive_task = asyncio.create_task(
+            receive_messages(websocket, output_queue, show_progress=True)
+        )
         output_audio_task = asyncio.create_task(output_audio(args.out, output_queue))
         send_task = asyncio.create_task(send_loop())
         await asyncio.gather(receive_task, output_audio_task, send_task)
