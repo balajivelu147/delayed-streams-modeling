@@ -260,13 +260,24 @@ def main():
     ]
 
     wav_frames = queue.Queue()
+    sample_rate = mimi.sample_rate
+    frame_size = sample_rate // 1000 * 60
+    pending_pcm = np.array([], dtype=np.float32)
+
+    def _emit_frames():
+        nonlocal pending_pcm
+        while pending_pcm.size >= frame_size:
+            wav_frames.put_nowait(pending_pcm[:frame_size].copy())
+            pending_pcm = pending_pcm[frame_size:]
 
     def _on_frame(frame):
+        nonlocal pending_pcm
         if (frame == -1).any():
             return
         _pcm = tts_model.mimi.decode_step(frame[:, :, None])
-        _pcm = np.array(mx.clip(_pcm[0, 0], -1, 1))
-        wav_frames.put_nowait(_pcm)
+        _pcm = np.array(mx.clip(_pcm[0, 0], -1, 1), dtype=np.float32)
+        pending_pcm = np.concatenate([pending_pcm, _pcm])
+        _emit_frames()
 
     gen = TTSGen(tts_model, all_attributes, on_frame=_on_frame)
 
@@ -286,31 +297,49 @@ def main():
         def audio_callback(outdata, _a, _b, _c):
             try:
                 pcm_data = wav_frames.get(block=False)
-                outdata[:, 0] = pcm_data
+                frames = min(pcm_data.size, outdata.shape[0])
+                outdata[:frames, 0] = pcm_data[:frames]
+                if frames < outdata.shape[0]:
+                    outdata[frames:, 0] = 0
+                if pcm_data.size > outdata.shape[0]:
+                    remainder = pcm_data[outdata.shape[0] :]
+                    if remainder.size:
+                        wav_frames.put_nowait(remainder)
             except queue.Empty:
                 outdata[:] = 0
 
         with sd.OutputStream(
-            samplerate=mimi.sample_rate,
-            blocksize=1920,
+            samplerate=sample_rate,
+            blocksize=frame_size,
             channels=1,
             callback=audio_callback,
         ):
             run()
+            if pending_pcm.size:
+                wav_frames.put_nowait(pending_pcm.copy())
             while True:
                 if wav_frames.qsize() == 0:
                     break
                 time.sleep(1)
     else:
         run()
+        if pending_pcm.size:
+            wav_frames.put_nowait(pending_pcm.copy())
         frames = []
         while True:
             try:
                 frames.append(wav_frames.get_nowait())
             except queue.Empty:
                 break
-        wav = np.concat(frames, -1)
-        sphn.write_wav(args.out, wav, mimi.sample_rate)
+        wav = np.concatenate(frames, axis=-1) if frames else np.array([], dtype=np.float32)
+        if args.out.lower().endswith(".raw"):
+            pcm_i16 = np.clip(wav, -1.0, 1.0)
+            pcm_i16 = (pcm_i16 * np.float32(32767.0)).astype("<i2")
+            with open(args.out, "wb") as fobj:
+                pcm_i16.tofile(fobj)
+            log("info", f"Saved raw 16-bit PCM audio to {args.out} at {sample_rate}Hz")
+        else:
+            sphn.write_wav(args.out, wav, sample_rate)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import sounddevice as sd
 import websockets
 
 SAMPLE_RATE = 8000
-FRAME_SIZE = SAMPLE_RATE // 1000 * 80  # 80ms blocks
+FRAME_SIZE = SAMPLE_RATE // 1000 * 60  # 60ms blocks
 
 # The VAD has several prediction heads, each of which tries to determine whether there
 # has been a pause of a given length. The lengths are 0.5, 1.0, 2.0, and 3.0 seconds.

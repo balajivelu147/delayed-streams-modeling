@@ -17,7 +17,7 @@ import sphn
 import websockets
 
 SAMPLE_RATE = 8000
-FRAME_SIZE = SAMPLE_RATE // 1000 * 80  # Send data in ~80ms chunks
+FRAME_SIZE = SAMPLE_RATE // 1000 * 60  # Send data in fixed 60ms chunks
 
 
 def load_and_process_audio(file_path):
