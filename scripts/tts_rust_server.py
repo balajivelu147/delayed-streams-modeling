@@ -20,7 +20,7 @@ import sphn
 import tqdm
 import websockets
 
-SAMPLE_RATE = 24000
+SAMPLE_RATE = 16000
 
 TTS_TEXT = "Hello, this is a test of the moshi text to speech system, this should result in some nicely sounding generated voice."
 DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
@@ -72,7 +72,7 @@ async def output_audio(out: str, output_queue: asyncio.Queue[np.ndarray | None])
 
         with sd.OutputStream(
             samplerate=SAMPLE_RATE,
-            blocksize=1920,
+            blocksize=1280,
             channels=1,
             callback=audio_callback,
         ):
@@ -146,7 +146,7 @@ async def websocket_client():
     parser.add_argument(
         "--url",
         help="The URL of the server to which to send the audio",
-        default="ws://127.0.0.1:8080",
+        default="ws://127.0.0.1:8082",
     )
     parser.add_argument("--api-key", default="public_token")
     args = parser.parse_args()

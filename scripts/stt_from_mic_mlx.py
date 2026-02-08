@@ -86,8 +86,8 @@ if __name__ == "__main__":
     with sd.InputStream(
         channels=1,
         dtype="float32",
-        samplerate=24000,
-        blocksize=1920,
+        samplerate=16000,
+        blocksize=1280,
         callback=audio_callback,
     ):
         while True:
